@@ -140,4 +140,4 @@ app.post('/auth/register-verify', async (req, res) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Serveur Kibali Auth lancé sur https://kibali-iadeploy.onrender.com (port ${PORT})`);
-});// Update: Thu Jan  1 00:56:23 WAT 2026
+});// Update: Thu Jan  1 00:59:28 WAT 2026
