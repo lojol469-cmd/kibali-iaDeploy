@@ -183,4 +183,4 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`📡 Prêt pour les requêtes WebAuthn`);
 });
 
-// Update: Wed Dec 31 22:45:00 WAT 2025
+// Update: Wed Dec 31 22:45:00 WAT 2025// Update: Wed Dec 31 22:30:54 WAT 2025
