@@ -16,7 +16,7 @@ import base64url from 'base64url';
 
 const app = express();
 
-// --- CONFIGURATION CRITIQUE : DOMAINE DU FRONTEND ---
+// --- CONFIGURATION CRITIQUE ---
 const RP_ID = process.env.RP_ID || 'kibali-ui-deploy.onrender.com';
 const EXPECTED_ORIGIN = process.env.EXPECTED_ORIGIN || 'https://kibali-ui-deploy.onrender.com';
 
@@ -30,19 +30,24 @@ app.use(cors({
         'http://localhost:5173'
     ],
     credentials: true,
-    methods: ['GET', 'POST']
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type']
 }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Important pour les gros payloads WebAuthn
 
 // --- CONNEXION MONGODB ---
 const MONGO_URI = process.env.MONGO_URI;
 if (!MONGO_URI) {
-    console.error("❌ ERREUR : MONGO_URI n'est pas définie");
+    console.error("❌ ERREUR : MONGO_URI n'est pas définie dans .env");
     process.exit(1);
 }
+
 mongoose.connect(MONGO_URI)
     .then(() => console.log("✅ Connecté à MongoDB Atlas (Kibali Auth)"))
-    .catch(err => console.error("❌ Erreur MongoDB:", err.message));
+    .catch(err => {
+        console.error("❌ Erreur connexion MongoDB:", err.message);
+        process.exit(1);
+    });
 
 // --- MODÈLE UTILISATEUR ---
 const UserSchema = new mongoose.Schema({
@@ -55,14 +60,10 @@ const UserSchema = new mongoose.Schema({
     }],
     currentChallenge: String
 });
+
 const User = mongoose.model('User', UserSchema);
 
-// --- UTILITAIRE ---
-function stringToUint8Array(str) {
-    return new TextEncoder().encode(str);
-}
-
-// --- ROUTE : GÉNÉRATION DES OPTIONS ---
+// --- ROUTE : GÉNÉRATION DES OPTIONS D'ENREGISTREMENT ---
 app.post('/auth/register-options', async (req, res) => {
     try {
         const { username } = req.body;
@@ -76,7 +77,7 @@ app.post('/auth/register-options', async (req, res) => {
         const options = await generateRegistrationOptions({
             rpName: 'Kibali AI',
             rpID: RP_ID,
-            userID: stringToUint8Array(username),
+            userID: username, // @simplewebauthn/server accepte string directement maintenant
             userName: username,
             userDisplayName: username,
             attestationType: 'none',
@@ -84,12 +85,17 @@ app.post('/auth/register-options', async (req, res) => {
                 residentKey: 'preferred',
                 userVerification: 'required',
             },
+            excludeCredentials: user.devices.map(dev => ({
+                id: base64url.toBuffer(dev.credentialID),
+                type: 'public-key',
+                transports: dev.transports,
+            })),
         });
 
         user.currentChallenge = options.challenge;
         await user.save();
 
-        console.log(`✅ Challenge généré pour ${username}: ${options.challenge.substring(0, 20)}...`);
+        console.log(`✅ Options générées pour ${username}`);
         res.json(options);
     } catch (error) {
         console.error("❌ Erreur register-options:", error);
@@ -97,69 +103,75 @@ app.post('/auth/register-options', async (req, res) => {
     }
 });
 
-// --- ROUTE : VÉRIFICATION ET ENREGISTREMENT (CORRIGÉE) ---
+// --- ROUTE : VÉRIFICATION DE L'ENREGISTREMENT (CORRIGÉE ET ROBUSTE) ---
 app.post('/auth/register-verify', async (req, res) => {
     try {
-        const { username, attestation } = req.body;
+        const { username, response } = req.body; // ← CLÉ CORRECTE : "response"
 
-        console.log(`🔍 Tentative de vérification pour: ${username}`);
-        console.log(`📦 Données reçues:`, JSON.stringify(req.body, null, 2));
+        console.log(`🔍 Vérification enregistrement pour: ${username}`);
 
-        if (!username || !attestation) {
-            return res.status(400).json({ error: "Données manquantes (username ou attestation)" });
+        if (!username || !response) {
+            return res.status(400).json({ 
+                error: "Données manquantes", 
+                details: "username et response sont requis" 
+            });
         }
 
         const user = await User.findOne({ username });
         if (!user || !user.currentChallenge) {
-            return res.status(400).json({ error: "Challenge introuvable. Recommencez l'enregistrement." });
+            return res.status(400).json({ 
+                error: "Challenge expiré ou invalide. Recommencez." 
+            });
         }
 
-        console.log(`✅ Challenge trouvé: ${user.currentChallenge.substring(0, 20)}...`);
-        console.log(`🔐 Origin attendue: ${EXPECTED_ORIGIN}`);
-        console.log(`🔐 RP_ID attendu: ${RP_ID}`);
+        console.log(`🔐 Vérification avec challenge: ${user.currentChallenge.substring(0, 20)}...`);
 
-        // CORRECTION CRITIQUE : Utiliser "attestation" au lieu de "body"
         const verification = await verifyRegistrationResponse({
-            response: attestation,
+            response, // ← L'objet complet renvoyé par startRegistration()
             expectedChallenge: user.currentChallenge,
             expectedOrigin: EXPECTED_ORIGIN,
-            expectedRPID: RP_ID,
+            expectedRPId: RP_ID, // ← camelCase : RPId, pas RPID !
             requireUserVerification: true,
         });
 
-        if (verification.verified) {
-            const { registrationInfo } = verification;
-
-            console.log(`✅ Signature vérifiée pour ${username}`);
-
-            user.devices.push({
-                credentialID: base64url.encode(registrationInfo.credentialID),
-                publicKey: base64url.encode(registrationInfo.credentialPublicKey),
-                counter: registrationInfo.counter,
-                transports: attestation.response?.transports || attestation.transports || [],
-            });
-
-            user.currentChallenge = null;
-            await user.save();
-
-            console.log(`✅ Appareil biométrique enregistré dans MongoDB pour ${username}`);
-            console.log(`📊 Total d'appareils: ${user.devices.length}`);
-            
-            return res.json({ 
-                verified: true,
-                message: "Appareil enregistré avec succès",
-                deviceCount: user.devices.length
+        if (!verification.verified) {
+            console.warn("⚠️ Vérification échouée");
+            return res.status(400).json({ 
+                verified: false, 
+                error: "Échec de la vérification biométrique" 
             });
         }
 
-        console.warn("⚠️ Signature invalide");
-        res.status(400).json({ verified: false, error: "Signature invalide" });
+        const { registrationInfo } = verification;
+        const { credentialPublicKey, credentialID, counter } = registrationInfo;
+
+        // Enregistrement du nouvel appareil
+        user.devices.push({
+            credentialID: base64url.encode(credentialID),
+            publicKey: base64url.encode(credentialPublicKey),
+            counter,
+            transports: response.transports || [],
+        });
+
+        user.currentChallenge = null; // Nettoyage
+        await user.save();
+
+        console.log(`✅ Appareil biométrique enregistré pour ${username}`);
+        console.log(`📊 Total appareils: ${user.devices.length}`);
+
+        res.json({
+            verified: true,
+            message: "Appareil enregistré avec succès",
+            deviceCount: user.devices.length
+        });
+
     } catch (error) {
-        console.error("❌ ERREUR CRITIQUE dans register-verify :", error.message);
-        console.error("Stack complet :", error.stack);
+        console.error("❌ Erreur critique register-verify:", error.message);
+        console.error(error.stack);
+
         res.status(500).json({ 
-            error: error.message || "Erreur interne du serveur",
-            details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            error: "Erreur serveur lors de la vérification",
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
 });
@@ -170,17 +182,16 @@ app.get('/health', (req, res) => {
         status: 'ok', 
         rpId: RP_ID,
         expectedOrigin: EXPECTED_ORIGIN,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        mongoConnected: mongoose.connection.readyState === 1
     });
 });
 
-// --- LANCEMENT ---
+// --- LANCEMENT SERVEUR ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Serveur Kibali Auth actif sur le port ${PORT}`);
+    console.log(`🚀 Serveur Kibali Auth démarré sur le port ${PORT}`);
     console.log(`🌍 RP_ID: ${RP_ID}`);
-    console.log(`🔗 Origin acceptée: ${EXPECTED_ORIGIN}`);
-    console.log(`📡 Prêt pour les requêtes WebAuthn`);
-});
-
-// Update: Wed Dec 31 22:45:00 WAT 2025// Update: Wed Dec 31 22:30:54 WAT 2025
+    console.log(`🔗 Origin autorisée: ${EXPECTED_ORIGIN}`);
+    console.log(`✅ Prêt pour WebAuthn biométrique (FaceID/TouchID)`);
+});// Update: Thu Jan  1 00:34:46 WAT 2026
