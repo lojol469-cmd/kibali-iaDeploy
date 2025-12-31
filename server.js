@@ -16,20 +16,18 @@ import base64url from 'base64url';
 
 const app = express();
 
-// --- CONFIGURATION CORRECTE POUR PRODUCTION (FRONTEND ≠ BACKEND) ---
-// RP_ID = domaine du FRONTEND uniquement
-const RP_ID = process.env.RP_ID || 'kibali-ui-deploy.onrender.com';
-// Origin complète du FRONTEND (https + domaine, sans / final)
-const EXPECTED_ORIGIN = process.env.EXPECTED_ORIGIN || 'https://kibali-ui-deploy.onrender.com';
+// --- CONFIGURATION CRITIQUE : DOMAINE DU FRONTEND ---
+const RP_ID = process.env.RP_ID || 'kibali-ui-deploy.onrender.com'; // Domaine du FRONTEND uniquement
+const EXPECTED_ORIGIN = process.env.EXPECTED_ORIGIN || 'https://kibali-ui-deploy.onrender.com'; // URL complète FRONTEND, sans slash final
 
-console.log(`🌍 RP_ID (doit être le domaine FRONTEND) : ${RP_ID}`);
-console.log(`🔗 EXPECTED_ORIGIN (URL complète FRONTEND) : ${EXPECTED_ORIGIN}`);
+console.log(`🌍 RP_ID configuré : ${RP_ID}`);
+console.log(`🔗 Origin attendue : ${EXPECTED_ORIGIN}`);
 
 // --- MIDDLEWARE ---
 app.use(cors({
     origin: [
         'https://kibali-ui-deploy.onrender.com',
-        'http://localhost:5173'  // Pour tests locaux
+        'http://localhost:5173'  // Pour développement local
     ],
     credentials: true,
     methods: ['GET', 'POST']
@@ -39,14 +37,14 @@ app.use(express.json());
 // --- CONNEXION MONGODB ---
 const MONGO_URI = process.env.MONGO_URI;
 if (!MONGO_URI) {
-    console.error("❌ MONGO_URI manquante");
+    console.error("❌ ERREUR : MONGO_URI n'est pas définie");
     process.exit(1);
 }
 mongoose.connect(MONGO_URI)
-    .then(() => console.log("✅ Connecté à MongoDB Atlas"))
-    .catch(err => console.error("❌ Erreur MongoDB:", err));
+    .then(() => console.log("✅ Connecté à MongoDB Atlas (Kibali Auth)"))
+    .catch(err => console.error("❌ Erreur MongoDB:", err.message));
 
-// --- MODÈLE ---
+// --- MODÈLE UTILISATEUR ---
 const UserSchema = new mongoose.Schema({
     username: { type: String, unique: true, required: true },
     devices: [{
@@ -59,18 +57,21 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// --- ROUTES ---
+// --- UTILITAIRE ---
 function stringToUint8Array(str) {
     return new TextEncoder().encode(str);
 }
 
+// --- ROUTE : GÉNÉRATION DES OPTIONS ---
 app.post('/auth/register-options', async (req, res) => {
     try {
         const { username } = req.body;
         if (!username) return res.status(400).json({ error: "Username requis" });
 
         let user = await User.findOne({ username });
-        if (!user) user = new User({ username, devices: [] });
+        if (!user) {
+            user = new User({ username, devices: [] });
+        }
 
         const options = await generateRegistrationOptions({
             rpName: 'Kibali AI',
@@ -95,6 +96,7 @@ app.post('/auth/register-options', async (req, res) => {
     }
 });
 
+// --- ROUTE : VÉRIFICATION ET ENREGISTREMENT ---
 app.post('/auth/register-verify', async (req, res) => {
     try {
         const { username, body } = req.body;
@@ -104,9 +106,9 @@ app.post('/auth/register-verify', async (req, res) => {
             return res.status(400).json({ error: "Challenge introuvable. Recommencez." });
         }
 
-        console.log("🔍 Vérification biométrique pour:", username);
-        console.log("🌐 Origin attendue:", EXPECTED_ORIGIN);
-        console.log("🆔 RP_ID attendu:", RP_ID);
+        console.log(`🔍 Vérification biométrique pour ${username}`);
+        console.log(`Origin attendue : ${EXPECTED_ORIGIN}`);
+        console.log(`RP_ID attendu : ${RP_ID}`);
 
         const verification = await verifyRegistrationResponse({
             response: body,
@@ -123,26 +125,28 @@ app.post('/auth/register-verify', async (req, res) => {
                 credentialID: base64url.encode(registrationInfo.credentialID),
                 publicKey: base64url.encode(registrationInfo.credentialPublicKey),
                 counter: registrationInfo.counter,
-                transports: body.response?.transports || [],
+                transports: body.response?.transports || body.transports || [],
             });
 
             user.currentChallenge = null;
             await user.save();
 
-            console.log(`✅ Appareil biométrique enregistré dans MongoDB pour ${username}`);
+            console.log(`✅ Appareil biométrique enregistré avec succès dans MongoDB pour ${username}`);
             return res.json({ verified: true });
         }
 
+        console.warn("⚠️ Signature invalide");
         res.status(400).json({ verified: false, error: "Signature invalide" });
     } catch (error) {
-        console.error("❌ ERREUR 500 dans verify:", error.message);
-        console.error("Stack:", error.stack);
-        res.status(500).json({ error: error.message });
+        console.error("❌ ERREUR 500 dans register-verify :", error.message);
+        console.error("Stack :", error.stack);
+        res.status(500).json({ error: error.message || "Erreur interne du serveur" });
     }
 });
 
 // --- LANCEMENT ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Serveur actif sur le port ${PORT}`);
-});// Update: Wed Dec 31 21:04:03 WAT 2025
+    console.log(`🚀 Serveur Kibali Auth actif sur le port ${PORT}`);
+    console.log(`Prêt pour les requêtes depuis ${EXPECTED_ORIGIN}`);
+});// Update: Wed Dec 31 21:09:57 WAT 2025
