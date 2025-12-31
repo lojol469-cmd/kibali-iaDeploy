@@ -1,4 +1,4 @@
-// --- CORRECTIF WEBCRYPTO POUR NODE.JS / DOCKER / RENDER (INDISPENSABLE) ---
+// --- CORRECTIF WEBCRYPTO POUR NODE.JS / RENDER / DOCKER (OBLIGATOIRE) ---
 import { webcrypto } from 'node:crypto';
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
@@ -17,17 +17,17 @@ import base64url from 'base64url';
 const app = express();
 
 // --- CONFIGURATION DYNAMIQUE DES ORIGINES ---
-const RP_ID = process.env.RP_ID || 'kibali-ui-deploy.onrender.com'; // Doit être le domaine du FRONTEND
-const EXPECTED_ORIGIN = process.env.EXPECTED_ORIGIN || 'https://kibali-ui-deploy.onrender.com';
+const RP_ID = process.env.RP_ID || 'kibali-ui-deploy.onrender.com'; // Doit être le domaine du FRONTEND uniquement
+const EXPECTED_ORIGIN = process.env.EXPECTED_ORIGIN || 'https://kibali-ui-deploy.onrender.com'; // SANS slash final
 
-console.log(`🌍 RP_ID utilisé : ${RP_ID}`);
-console.log(`🔗 ORIGIN attendue : ${EXPECTED_ORIGIN}`);
+console.log(`🌍 RP_ID configuré : ${RP_ID}`);
+console.log(`🔗 Origin attendue : ${EXPECTED_ORIGIN}`);
 
 // --- CONFIGURATION MIDDLEWARE ---
 app.use(cors({
     origin: [
         'https://kibali-ui-deploy.onrender.com',
-        'http://localhost:5173'  // Pour tes tests locaux
+        'http://localhost:5173'  // Pour développement local
     ],
     credentials: true,
     methods: ['GET', 'POST']
@@ -99,25 +99,22 @@ app.post('/auth/register-options', async (req, res) => {
     }
 });
 
-// Étape B : Vérifier et enregistrer la credential (CORRECTION ROBUSTE)
+// Étape B : Vérifier la credential (ROBUSTE + LOGS DÉTAILLÉS)
 app.post('/auth/register-verify', async (req, res) => {
     try {
         const { username, body } = req.body;
 
-        // Recherche de l'utilisateur
         const user = await User.findOne({ username });
 
-        if (!user) {
-            console.error("❌ Utilisateur non trouvé:", username);
-            return res.status(400).json({ error: "Utilisateur non trouvé" });
+        if (!user || !user.currentChallenge) {
+            console.error("❌ Challenge introuvable ou expiré pour l'utilisateur:", username);
+            return res.status(400).json({ error: "Challenge introuvable. Recommencez." });
         }
 
-        if (!user.currentChallenge) {
-            console.error("❌ Challenge manquant ou expiré pour:", username);
-            return res.status(400).json({ error: "Session expirée ou challenge manquant" });
-        }
+        console.log("🔍 Tentative de vérification pour:", username);
+        console.log("🌐 Origin attendue:", EXPECTED_ORIGIN);
+        console.log("🆔 RP_ID attendu:", RP_ID);
 
-        // Vérification avec SimpleWebAuthn
         const verification = await verifyRegistrationResponse({
             response: body,
             expectedChallenge: user.currentChallenge,
@@ -129,15 +126,14 @@ app.post('/auth/register-verify', async (req, res) => {
         if (verification.verified) {
             const { registrationInfo } = verification;
 
-            // Sauvegarde sécurisée du nouvel appareil
             user.devices.push({
                 credentialID: base64url.encode(registrationInfo.credentialID),
                 publicKey: base64url.encode(registrationInfo.credentialPublicKey),
                 counter: registrationInfo.counter,
-                transports: body.transports || body.response?.transports || [],
+                transports: body.response?.transports || body.transports || [],
             });
 
-            user.currentChallenge = null; // Invalidation du challenge
+            user.currentChallenge = null;
             await user.save();
 
             console.log(`✅ Biométrie enregistrée avec succès pour ${username}`);
@@ -145,10 +141,11 @@ app.post('/auth/register-verify', async (req, res) => {
         }
 
         console.warn("⚠️ Vérification biométrique échouée (signature invalide)");
-        res.status(400).json({ verified: false, error: "Signature invalide" });
+        res.status(400).json({ verified: false, error: "Échec de vérification" });
     } catch (error) {
-        console.error("❌ Erreur critique dans register-verify:", error);
-        res.status(500).json({ error: error.message || "Erreur interne du serveur" });
+        console.error("❌ ERREUR SERVEUR (500) dans register-verify:", error.message);
+        console.error("Stack:", error.stack);
+        res.status(500).json({ error: error.message || "Erreur interne lors de la vérification" });
     }
 });
 
@@ -156,5 +153,5 @@ app.post('/auth/register-verify', async (req, res) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Serveur Kibali Auth actif sur le port ${PORT}`);
-    console.log(`Attente de requêtes depuis : ${EXPECTED_ORIGIN}`);
-});// Update: Wed Dec 31 20:54:07 WAT 2025
+    console.log(`Prêt à recevoir les requêtes depuis ${EXPECTED_ORIGIN}`);
+});// Update: Wed Dec 31 20:58:03 WAT 2025
