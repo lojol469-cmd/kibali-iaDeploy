@@ -20,8 +20,8 @@ const app = express();
 const RP_ID = process.env.RP_ID || 'kibali-ui-deploy.onrender.com';
 const EXPECTED_ORIGIN = process.env.EXPECTED_ORIGIN || 'https://kibali-ui-deploy.onrender.com';
 
-console.log(`🌍 RP_ID configuré : ${RP_ID}`);
-console.log(`🔗 Origin attendue : ${EXPECTED_ORIGIN}`);
+console.log(`RP_ID configuré : ${RP_ID}`);
+console.log(`Origin attendue : ${EXPECTED_ORIGIN}`);
 
 // --- MIDDLEWARE ---
 app.use(cors({
@@ -33,19 +33,19 @@ app.use(cors({
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type']
 }));
-app.use(express.json({ limit: '10mb' })); // Important pour les gros payloads WebAuthn
+app.use(express.json({ limit: '10mb' }));
 
 // --- CONNEXION MONGODB ---
 const MONGO_URI = process.env.MONGO_URI;
 if (!MONGO_URI) {
-    console.error("❌ ERREUR : MONGO_URI n'est pas définie dans .env");
+    console.error("ERREUR : MONGO_URI n'est pas définie dans .env");
     process.exit(1);
 }
 
 mongoose.connect(MONGO_URI)
-    .then(() => console.log("✅ Connecté à MongoDB Atlas (Kibali Auth)"))
+    .then(() => console.log("Connecté à MongoDB Atlas (Kibali Auth)"))
     .catch(err => {
-        console.error("❌ Erreur connexion MongoDB:", err.message);
+        console.error("Erreur connexion MongoDB:", err.message);
         process.exit(1);
     });
 
@@ -67,17 +67,28 @@ const User = mongoose.model('User', UserSchema);
 app.post('/auth/register-options', async (req, res) => {
     try {
         const { username } = req.body;
-        if (!username) return res.status(400).json({ error: "Username requis" });
+        if (!username || typeof username !== 'string') {
+            return res.status(400).json({ error: "Username requis et doit être une chaîne" });
+        }
 
         let user = await User.findOne({ username });
         if (!user) {
             user = new User({ username, devices: [] });
         }
 
+        // Préparation sécurisée de excludeCredentials
+        const excludeCredentials = user.devices.length > 0
+            ? user.devices.map(dev => ({
+                  id: base64url.toBuffer(dev.credentialID),
+                  type: 'public-key',
+                  transports: dev.transports || [],
+              }))
+            : undefined;
+
         const options = await generateRegistrationOptions({
             rpName: 'Kibali AI',
             rpID: RP_ID,
-            userID: username, // @simplewebauthn/server accepte string directement maintenant
+            userID: username,                    // String directe (recommandé depuis v8+)
             userName: username,
             userDisplayName: username,
             attestationType: 'none',
@@ -85,30 +96,30 @@ app.post('/auth/register-options', async (req, res) => {
                 residentKey: 'preferred',
                 userVerification: 'required',
             },
-            excludeCredentials: user.devices.map(dev => ({
-                id: base64url.toBuffer(dev.credentialID),
-                type: 'public-key',
-                transports: dev.transports,
-            })),
+            excludeCredentials,
         });
 
         user.currentChallenge = options.challenge;
         await user.save();
 
-        console.log(`✅ Options générées pour ${username}`);
+        console.log(`Options générées pour ${username}`);
         res.json(options);
     } catch (error) {
-        console.error("❌ Erreur register-options:", error);
-        res.status(500).json({ error: error.message });
+        console.error("Erreur register-options:", error.message);
+        console.error("Stack:", error.stack);
+        res.status(500).json({ 
+            error: "Erreur serveur lors de la génération des options",
+            details: error.message 
+        });
     }
 });
 
-// --- ROUTE : VÉRIFICATION DE L'ENREGISTREMENT (CORRIGÉE ET ROBUSTE) ---
+// --- ROUTE : VÉRIFICATION DE L'ENREGISTREMENT ---
 app.post('/auth/register-verify', async (req, res) => {
     try {
-        const { username, response } = req.body; // ← CLÉ CORRECTE : "response"
+        const { username, response } = req.body;
 
-        console.log(`🔍 Vérification enregistrement pour: ${username}`);
+        console.log(`Vérification enregistrement pour: ${username}`);
 
         if (!username || !response) {
             return res.status(400).json({ 
@@ -120,22 +131,20 @@ app.post('/auth/register-verify', async (req, res) => {
         const user = await User.findOne({ username });
         if (!user || !user.currentChallenge) {
             return res.status(400).json({ 
-                error: "Challenge expiré ou invalide. Recommencez." 
+                error: "Challenge expiré ou invalide. Recommencez l'enregistrement." 
             });
         }
 
-        console.log(`🔐 Vérification avec challenge: ${user.currentChallenge.substring(0, 20)}...`);
-
         const verification = await verifyRegistrationResponse({
-            response, // ← L'objet complet renvoyé par startRegistration()
+            response,
             expectedChallenge: user.currentChallenge,
             expectedOrigin: EXPECTED_ORIGIN,
-            expectedRPId: RP_ID, // ← camelCase : RPId, pas RPID !
+            expectedRPId: RP_ID,                    // camelCase obligatoire
             requireUserVerification: true,
         });
 
         if (!verification.verified) {
-            console.warn("⚠️ Vérification échouée");
+            console.warn("Vérification biométrique échouée");
             return res.status(400).json({ 
                 verified: false, 
                 error: "Échec de la vérification biométrique" 
@@ -145,7 +154,6 @@ app.post('/auth/register-verify', async (req, res) => {
         const { registrationInfo } = verification;
         const { credentialPublicKey, credentialID, counter } = registrationInfo;
 
-        // Enregistrement du nouvel appareil
         user.devices.push({
             credentialID: base64url.encode(credentialID),
             publicKey: base64url.encode(credentialPublicKey),
@@ -153,11 +161,11 @@ app.post('/auth/register-verify', async (req, res) => {
             transports: response.transports || [],
         });
 
-        user.currentChallenge = null; // Nettoyage
+        user.currentChallenge = null;
         await user.save();
 
-        console.log(`✅ Appareil biométrique enregistré pour ${username}`);
-        console.log(`📊 Total appareils: ${user.devices.length}`);
+        console.log(`Appareil biométrique enregistré pour ${username}`);
+        console.log(`Total appareils enregistrés: ${user.devices.length}`);
 
         res.json({
             verified: true,
@@ -166,17 +174,17 @@ app.post('/auth/register-verify', async (req, res) => {
         });
 
     } catch (error) {
-        console.error("❌ Erreur critique register-verify:", error.message);
-        console.error(error.stack);
+        console.error("Erreur critique register-verify:", error.message);
+        console.error("Stack complet:", error.stack);
 
         res.status(500).json({ 
             error: "Erreur serveur lors de la vérification",
-            details: process.env.NODE_ENV === 'development' ? error.message : undefined
+            details: error.message
         });
     }
 });
 
-// --- ROUTE DE TEST ---
+// --- ROUTE DE SANTÉ ---
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
@@ -187,11 +195,11 @@ app.get('/health', (req, res) => {
     });
 });
 
-// --- LANCEMENT SERVEUR ---
+// --- DÉMARRAGE SERVEUR ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Serveur Kibali Auth démarré sur le port ${PORT}`);
-    console.log(`🌍 RP_ID: ${RP_ID}`);
-    console.log(`🔗 Origin autorisée: ${EXPECTED_ORIGIN}`);
-    console.log(`✅ Prêt pour WebAuthn biométrique (FaceID/TouchID)`);
-});// Update: Thu Jan  1 00:34:46 WAT 2026
+    console.log(`Serveur Kibali Auth démarré sur le port ${PORT}`);
+    console.log(`RP_ID: ${RP_ID}`);
+    console.log(`Origin autorisée: ${EXPECTED_ORIGIN}`);
+    console.log(`Prêt pour authentification biométrique (FaceID/TouchID)`);
+});// Update: Thu Jan  1 00:39:06 WAT 2026
