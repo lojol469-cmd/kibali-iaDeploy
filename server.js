@@ -17,7 +17,8 @@ import base64url from 'base64url';
 const app = express();
 
 // --- CONFIGURATION DYNAMIQUE DES ORIGINES ---
-const RP_ID = process.env.RP_ID || 'kibali-iadeploy.onrender.com';
+// CORRECTION : Le RP_ID doit être le domaine du FRONTEND pour que le navigateur accepte FaceID
+const RP_ID = process.env.RP_ID || 'kibali-ui-deploy.onrender.com';
 const EXPECTED_ORIGIN = process.env.EXPECTED_ORIGIN || 'https://kibali-ui-deploy.onrender.com';
 
 // --- CONFIGURATION MIDDLEWARE ---
