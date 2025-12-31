@@ -157,4 +157,4 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Serveur Kibali Auth actif sur le port ${PORT}`);
     console.log(`Attente de requêtes depuis : ${EXPECTED_ORIGIN}`);
-});
+});// Update: Wed Dec 31 20:54:07 WAT 2025
