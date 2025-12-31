@@ -10,9 +10,9 @@ import mongoose from 'mongoose';
 import cors from 'cors';
 import { 
     generateRegistrationOptions, 
-    verifyRegistrationResponse,
-    isoUint8Array // ← NOUVEAU : IMPORT CRITIQUE
+    verifyRegistrationResponse 
 } from '@simplewebauthn/server';
+import { isoUint8Array } from '@simplewebauthn/server/helpers'; // ← IMPORT CORRIGÉ ICI
 import base64url from 'base64url';
 
 const app = express();
@@ -64,7 +64,7 @@ const UserSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', UserSchema);
 
-// --- ROUTE : GÉNÉRATION DES OPTIONS (CORRIGÉE POUR v10+) ---
+// --- ROUTE : GÉNÉRATION DES OPTIONS D'ENREGISTREMENT ---
 app.post('/auth/register-options', async (req, res) => {
     try {
         const { username } = req.body;
@@ -77,7 +77,6 @@ app.post('/auth/register-options', async (req, res) => {
             user = new User({ username, devices: [] });
         }
 
-        // excludeCredentials seulement si des appareils existent
         const excludeCredentials = user.devices.length > 0
             ? user.devices.map(dev => ({
                   id: base64url.toBuffer(dev.credentialID),
@@ -89,7 +88,7 @@ app.post('/auth/register-options', async (req, res) => {
         const options = await generateRegistrationOptions({
             rpName: 'Kibali AI',
             rpID: RP_ID,
-            userID: isoUint8Array.fromUTF8String(username),  // CORRECTION CRITIQUE
+            userID: isoUint8Array.fromUTF8String(username), // ← CORRIGÉ : Uint8Array obligatoire
             userName: username,
             userDisplayName: username,
             attestationType: 'none',
@@ -185,4 +184,4 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Serveur Kibali Auth actif sur le port ${PORT}`);
     console.log(`Prêt pour WebAuthn biométrique`);
-});// Update: Thu Jan  1 00:42:16 WAT 2026
+});// Update: Thu Jan  1 00:44:54 WAT 2026
