@@ -14,7 +14,11 @@ const app = express();
 
 // --- CONFIGURATION MIDDLEWARE ---
 app.use(cors({
-    origin: '*', // En production, remplace par ton domaine frontend
+    origin: [
+        'https://kibali-ui-deploy.onrender.com', // Ton Frontend en production
+        'http://localhost:5173'                   // Pour tes tests locaux (adapte le port si besoin)
+    ],
+    credentials: true, // Indispensable pour WebAuthn avec credentials
     methods: ['GET', 'POST']
 }));
 app.use(express.json());
@@ -46,8 +50,12 @@ const UserSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 
 // --- 3. ROUTES AUTH BIOMÉTRIQUE (WEBAUTHN) ---
-const RP_ID = 'localhost'; 
-const EXPECTED_ORIGIN = `http://${RP_ID}:3000`; // À adapter si ton frontend est sur un autre port (ex: 5173)
+// Variables pour production (définies dans le dashboard Render)
+const RP_ID = process.env.RP_ID || 'localhost'; // Ex: kibali-iadeploy.onrender.com
+const EXPECTED_ORIGIN = process.env.EXPECTED_ORIGIN || `http://localhost:5173`; // Ex: https://kibali-ui-deploy.onrender.com
+
+console.log(`RP_ID configuré : ${RP_ID}`);
+console.log(`EXPECTED_ORIGIN configuré : ${EXPECTED_ORIGIN}`);
 
 // Fonction utilitaire : convertir string → Uint8Array (obligatoire v9+)
 function stringToUint8Array(str) {
@@ -75,9 +83,7 @@ app.post('/auth/register-options', async (req, res) => {
             authenticatorSelection: {
                 residentKey: 'preferred',
                 userVerification: 'required', // Force biométrie ou PIN
-                // ← LIGNE SUPPRIMÉE INTENTIONNELLEMENT :
-                // authenticatorAttachment: 'platform',
-                // → Cela permet à Chrome Windows d'afficher Windows Hello directement
+                // Pas de 'platform' pour compatibilité maximale (Windows Hello, etc.)
             },
         });
 
@@ -103,7 +109,7 @@ app.post('/auth/register-verify', async (req, res) => {
         const verification = await verifyRegistrationResponse({
             response: body,
             expectedChallenge: user.currentChallenge,
-            expectedOrigin: EXPECTED_ORIGIN,
+            expectedOrigin: EXPECTED_ORIGIN, // Supporte string ou array (bibliothèque gère les deux)
             expectedRPID: RP_ID,
         });
 
@@ -133,5 +139,5 @@ app.post('/auth/register-verify', async (req, res) => {
 // --- 4. LANCEMENT DU SERVEUR ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Serveur Kibali Auth lancé sur http://localhost:${PORT}`);
+    console.log(`🚀 Serveur Kibali Auth lancé sur https://kibali-iadeploy.onrender.com (port ${PORT})`);
 });
