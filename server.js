@@ -1,5 +1,9 @@
+// --- CORRECTIF WEBCRYPTO POUR DOCKER (INDISPENSABLE) ---
+import { webcrypto } from 'node:crypto';
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
+
 import dotenv from 'dotenv';
-dotenv.config(); // Charge les variables du .env immédiatement
+dotenv.config(); 
 
 import express from 'express';
 import mongoose from 'mongoose';
@@ -12,13 +16,17 @@ import base64url from 'base64url';
 
 const app = express();
 
+// --- CONFIGURATION DYNAMIQUE DES ORIGINES ---
+const RP_ID = process.env.RP_ID || 'kibali-iadeploy.onrender.com';
+const EXPECTED_ORIGIN = process.env.EXPECTED_ORIGIN || 'https://kibali-ui-deploy.onrender.com';
+
 // --- CONFIGURATION MIDDLEWARE ---
 app.use(cors({
     origin: [
-        'https://kibali-ui-deploy.onrender.com', // Ton Frontend en production
-        'http://localhost:5173'                   // Pour tes tests locaux (adapte le port si besoin)
+        'https://kibali-ui-deploy.onrender.com', 
+        'http://localhost:5173'
     ],
-    credentials: true, // Indispensable pour WebAuthn avec credentials
+    credentials: true, 
     methods: ['GET', 'POST']
 }));
 app.use(express.json());
@@ -27,7 +35,7 @@ app.use(express.json());
 const MONGO_URI = process.env.MONGO_URI;
 
 if (!MONGO_URI) {
-    console.error("❌ ERREUR : MONGO_URI n'est pas définie dans le fichier .env");
+    console.error("❌ ERREUR : MONGO_URI n'est pas définie");
     process.exit(1); 
 }
 
@@ -35,7 +43,7 @@ mongoose.connect(MONGO_URI)
     .then(() => console.log("✅ Connecté à MongoDB Atlas (Kibali Auth)"))
     .catch(err => console.error("❌ Erreur de connexion MongoDB:", err.message));
 
-// --- 2. MODÈLE UTILISATEUR (BIOMÉTRIE) ---
+// --- 2. MODÈLE UTILISATEUR ---
 const UserSchema = new mongoose.Schema({
     username: { type: String, unique: true, required: true },
     devices: [{
@@ -49,20 +57,16 @@ const UserSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', UserSchema);
 
-// --- 3. ROUTES AUTH BIOMÉTRIQUE (WEBAUTHN) ---
-// Variables pour production (définies dans le dashboard Render)
-const RP_ID = process.env.RP_ID || 'localhost'; // Ex: kibali-iadeploy.onrender.com
-const EXPECTED_ORIGIN = process.env.EXPECTED_ORIGIN || `http://localhost:5173`; // Ex: https://kibali-ui-deploy.onrender.com
+// --- 3. ROUTES AUTH BIOMÉTRIQUE ---
 
-console.log(`RP_ID configuré : ${RP_ID}`);
-console.log(`EXPECTED_ORIGIN configuré : ${EXPECTED_ORIGIN}`);
+console.log(`🌍 RP_ID utilisé : ${RP_ID}`);
+console.log(`🔗 ORIGIN attendue : ${EXPECTED_ORIGIN}`);
 
-// Fonction utilitaire : convertir string → Uint8Array (obligatoire v9+)
 function stringToUint8Array(str) {
     return new TextEncoder().encode(str);
 }
 
-// Étape A : Générer les options d'enregistrement
+// Étape A : Générer les options
 app.post('/auth/register-options', async (req, res) => {
     try {
         const { username } = req.body;
@@ -82,8 +86,7 @@ app.post('/auth/register-options', async (req, res) => {
             attestationType: 'none',
             authenticatorSelection: {
                 residentKey: 'preferred',
-                userVerification: 'required', // Force biométrie ou PIN
-                // Pas de 'platform' pour compatibilité maximale (Windows Hello, etc.)
+                userVerification: 'required',
             },
         });
 
@@ -92,24 +95,23 @@ app.post('/auth/register-options', async (req, res) => {
 
         res.json(options);
     } catch (error) {
-        console.error("Erreur register-options:", error);
+        console.error("❌ Erreur register-options:", error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// Étape B : Vérifier et enregistrer la credential
+// Étape B : Vérifier la credential
 app.post('/auth/register-verify', async (req, res) => {
     try {
         const { username, body } = req.body;
         const user = await User.findOne({ username });
 
         if (!user) return res.status(400).json({ error: "Utilisateur non trouvé" });
-        if (!user.currentChallenge) return res.status(400).json({ error: "Aucun challenge en cours" });
 
         const verification = await verifyRegistrationResponse({
             response: body,
             expectedChallenge: user.currentChallenge,
-            expectedOrigin: EXPECTED_ORIGIN, // Supporte string ou array (bibliothèque gère les deux)
+            expectedOrigin: EXPECTED_ORIGIN,
             expectedRPID: RP_ID,
         });
 
@@ -125,19 +127,18 @@ app.post('/auth/register-verify', async (req, res) => {
 
             user.currentChallenge = null;
             await user.save();
-
             return res.json({ verified: true });
         }
 
         res.status(400).json({ verified: false, error: "Vérification échouée" });
     } catch (error) {
-        console.error("Erreur register-verify:", error);
+        console.error("❌ Erreur register-verify:", error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// --- 4. LANCEMENT DU SERVEUR ---
+// --- 4. LANCEMENT ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Serveur Kibali Auth lancé sur https://kibali-iadeploy.onrender.com (port ${PORT})`);
+    console.log(`🚀 Serveur actif sur le port ${PORT}`);
 });
